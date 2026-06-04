@@ -43,6 +43,13 @@ import {
   useLocation,
   useNavigate,
 } from "react-router-dom";
+import {
+  signInWithEmailAndPassword,
+  signOut,
+  onAuthStateChanged,
+  type User,
+} from "firebase/auth";
+import { auth } from "./firebase";
 
 type ProjectCategory = "Web" | "App" | "UI/UX" | "AI";
 type ProjectFilter = "All" | ProjectCategory;
@@ -101,6 +108,7 @@ type AuthState = {
   userLoggedIn: boolean;
   adminLoggedIn: boolean;
   userName: string;
+  adminEmail: string;
 };
 
 type LocalUser = {
@@ -112,8 +120,8 @@ type LocalUser = {
 type AuthContextValue = AuthState & {
   loginUser: (name: string) => void;
   logoutUser: () => void;
-  loginAdmin: () => void;
-  logoutAdmin: () => void;
+  loginAdmin: (email: string) => void;
+  logoutAdmin: () => Promise<void>;
 };
 
 type ContentContextValue = {
@@ -766,33 +774,79 @@ function UserLoginPage() {
 function AdminLoginPage() {
   const navigate = useNavigate();
   const { loginAdmin } = useAuth();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setError("");
+    setLoading(true);
+
+    try {
+      const userCredential = await signInWithEmailAndPassword(auth, email.trim(), password);
+      loginAdmin(userCredential.user.email || email);
+      navigate("/admin-dashboard");
+    } catch (err: any) {
+      const code = err?.code || "";
+      if (code === "auth/invalid-credential" || code === "auth/wrong-password" || code === "auth/user-not-found") {
+        setError("Invalid email or password.");
+      } else if (code === "auth/invalid-email") {
+        setError("Please enter a valid email.");
+      } else if (code === "auth/too-many-requests") {
+        setError("Too many attempts. Please try again later.");
+      } else {
+        setError("Login failed. Please try again.");
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <section className="bg-slate-950 px-5 py-16 md:px-8">
       <div className="mx-auto max-w-md rounded-2xl border border-indigo-400/35 bg-slate-900/80 p-8 shadow-[0_0_40px_rgba(90,102,255,0.2)]">
         <h1 className="font-heading text-3xl font-bold text-white">Admin Panel Login</h1>
-        <form
-          className="mt-7 space-y-4"
-          onSubmit={(event) => {
-            event.preventDefault();
-            loginAdmin();
-            navigate("/admin-dashboard");
-          }}
-        >
+        <p className="mt-2 text-sm text-slate-400">Secure access powered by Firebase Authentication</p>
+        <form className="mt-7 space-y-4" onSubmit={handleSubmit}>
           <label className="block text-sm font-medium text-slate-300">
-            Admin ID
-            <input className="mt-2 w-full rounded-xl border border-indigo-300/30 bg-slate-900 px-4 py-3 text-white outline-none focus:border-indigo-400" placeholder="ADMIN-001" />
+            Admin Email
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+              placeholder="admin@example.com"
+              className="mt-2 w-full rounded-xl border border-indigo-300/30 bg-slate-900 px-4 py-3 text-white outline-none focus:border-indigo-400"
+            />
           </label>
           <label className="block text-sm font-medium text-slate-300">
             Password
-            <input type="password" className="mt-2 w-full rounded-xl border border-indigo-300/30 bg-slate-900 px-4 py-3 text-white outline-none focus:border-indigo-400" />
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+              placeholder="Enter your password"
+              className="mt-2 w-full rounded-xl border border-indigo-300/30 bg-slate-900 px-4 py-3 text-white outline-none focus:border-indigo-400"
+            />
           </label>
           <p className="flex items-center gap-2 text-xs text-cyan-300">
             <LockKeyhole className="h-3.5 w-3.5" />
-            2FA Enabled: verification will be requested after login.
+            Protected by Firebase secure authentication.
           </p>
-          <button type="submit" className="w-full rounded-xl bg-gradient-to-r from-cyan-500 to-indigo-500 px-4 py-3 font-semibold text-white">
-            Secure Login
+          {error && (
+            <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-2 text-sm text-red-300">
+              {error}
+            </div>
+          )}
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full rounded-xl bg-gradient-to-r from-cyan-500 to-indigo-500 px-4 py-3 font-semibold text-white disabled:opacity-60"
+          >
+            {loading ? "Signing in..." : "Secure Login"}
           </button>
         </form>
       </div>
@@ -889,7 +943,7 @@ function UserDashboardPage() {
 }
 
 function AdminDashboardPage() {
-  const { adminLoggedIn, logoutAdmin } = useAuth();
+  const { adminLoggedIn, adminEmail, logoutAdmin } = useAuth();
   const { content, setContent, resetContent } = useContent();
   const [notice, setNotice] = useState("");
 
@@ -920,7 +974,7 @@ function AdminDashboardPage() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="font-heading text-4xl font-bold text-slate-900">Admin Dashboard</h1>
-          <p className="mt-2 text-slate-600">Edit website content and manage all public sections.</p>
+          <p className="mt-2 text-slate-600">Logged in as: <span className="font-semibold text-indigo-600">{adminEmail}</span></p>
         </div>
         <div className="flex gap-2">
           <button
@@ -933,7 +987,7 @@ function AdminDashboardPage() {
           >
             Reset
           </button>
-          <button type="button" onClick={logoutAdmin} className="rounded-full border border-slate-900 px-4 py-2 text-sm font-semibold text-slate-900">
+          <button type="button" onClick={() => logoutAdmin()} className="rounded-full border border-slate-900 px-4 py-2 text-sm font-semibold text-slate-900">
             Logout Admin
           </button>
         </div>
@@ -1296,8 +1350,29 @@ export default function App() {
 
   const [authState, setAuthState] = useState<AuthState>(() => {
     const saved = typeof window !== "undefined" ? window.localStorage.getItem("aarya-auth") : null;
-    return saved ? (JSON.parse(saved) as AuthState) : { userLoggedIn: false, adminLoggedIn: false, userName: "Client User" };
+    return saved ? (JSON.parse(saved) as AuthState) : { userLoggedIn: false, adminLoggedIn: false, userName: "Client User", adminEmail: "" };
   });
+
+  // Listen to Firebase Auth state changes
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (firebaseUser: User | null) => {
+      if (firebaseUser) {
+        setAuthState((prev) => ({
+          ...prev,
+          adminLoggedIn: true,
+          adminEmail: firebaseUser.email || "",
+        }));
+      } else {
+        setAuthState((prev) => ({
+          ...prev,
+          adminLoggedIn: false,
+          adminEmail: "",
+        }));
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
 
   useEffect(() => {
     window.localStorage.setItem("aarya-content", JSON.stringify(content));
@@ -1321,8 +1396,12 @@ export default function App() {
       ...authState,
       loginUser: (name: string) => setAuthState((prev) => ({ ...prev, userLoggedIn: true, userName: name || "Client User" })),
       logoutUser: () => setAuthState((prev) => ({ ...prev, userLoggedIn: false })),
-      loginAdmin: () => setAuthState((prev) => ({ ...prev, adminLoggedIn: true })),
-      logoutAdmin: () => setAuthState((prev) => ({ ...prev, adminLoggedIn: false })),
+      loginAdmin: (email: string) =>
+        setAuthState((prev) => ({ ...prev, adminLoggedIn: true, adminEmail: email })),
+      logoutAdmin: async () => {
+        await signOut(auth);
+        setAuthState((prev) => ({ ...prev, adminLoggedIn: false, adminEmail: "" }));
+      },
     }),
     [authState]
   );
