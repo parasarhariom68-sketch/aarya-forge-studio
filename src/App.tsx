@@ -49,7 +49,8 @@ import {
   onAuthStateChanged,
   type User,
 } from "firebase/auth";
-import { auth } from "./firebase";
+import { doc, setDoc, onSnapshot } from "firebase/firestore";
+import { auth, db } from "./firebase";
 
 type ProjectCategory = "Web" | "App" | "UI/UX" | "AI";
 type ProjectFilter = "All" | ProjectCategory;
@@ -1343,10 +1344,8 @@ function AppShell() {
 }
 
 export default function App() {
-  const [content, setContent] = useState<SiteContent>(() => {
-    const saved = typeof window !== "undefined" ? window.localStorage.getItem("aarya-content") : null;
-    return saved ? (JSON.parse(saved) as SiteContent) : initialContent;
-  });
+  const [content, setContent] = useState<SiteContent>(initialContent);
+  const [isContentLoaded, setIsContentLoaded] = useState(false);
 
   const [authState, setAuthState] = useState<AuthState>(() => {
     const saved = typeof window !== "undefined" ? window.localStorage.getItem("aarya-auth") : null;
@@ -1374,9 +1373,52 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
+  // Load content from Firestore on app start
   useEffect(() => {
-    window.localStorage.setItem("aarya-content", JSON.stringify(content));
-  }, [content]);
+    const contentDocRef = doc(db, "siteContent", "main");
+    
+    // Real-time listener - automatically updates when content changes
+    const unsubscribe = onSnapshot(
+      contentDocRef,
+      async (snapshot) => {
+        if (snapshot.exists()) {
+          // Content exists in Firestore - load it
+          setContent(snapshot.data() as SiteContent);
+        } else {
+          // First time - save default content to Firestore
+          try {
+            await setDoc(contentDocRef, initialContent);
+            setContent(initialContent);
+          } catch (error) {
+            console.error("Error initializing content:", error);
+          }
+        }
+        setIsContentLoaded(true);
+      },
+      (error) => {
+        console.error("Error loading content:", error);
+        setIsContentLoaded(true);
+      }
+    );
+
+    return () => unsubscribe();
+  }, []);
+
+  // Save content to Firestore whenever it changes (only after initial load)
+  useEffect(() => {
+    if (!isContentLoaded) return;
+    
+    const saveTimer = setTimeout(async () => {
+      try {
+        const contentDocRef = doc(db, "siteContent", "main");
+        await setDoc(contentDocRef, content);
+      } catch (error) {
+        console.error("Error saving content:", error);
+      }
+    }, 1000); // Save after 1 second of inactivity
+
+    return () => clearTimeout(saveTimer);
+  }, [content, isContentLoaded]);
 
   useEffect(() => {
     window.localStorage.setItem("aarya-auth", JSON.stringify(authState));
@@ -1405,6 +1447,18 @@ export default function App() {
     }),
     [authState]
   );
+
+  // Show loading screen while content loads from Firestore
+  if (!isContentLoaded) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-slate-950">
+        <div className="text-center">
+          <div className="mx-auto h-12 w-12 animate-spin rounded-full border-4 border-indigo-500 border-t-transparent"></div>
+          <p className="mt-4 text-sm text-slate-400">Loading...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <AuthContext.Provider value={authValue}>
