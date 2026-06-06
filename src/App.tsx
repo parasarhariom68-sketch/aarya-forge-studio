@@ -47,9 +47,21 @@ import {
   signInWithEmailAndPassword,
   signOut,
   onAuthStateChanged,
+  createUserWithEmailAndPassword,
+  updateProfile,
   type User,
 } from "firebase/auth";
-import { doc, setDoc, onSnapshot } from "firebase/firestore";
+import {
+  doc,
+  setDoc,
+  onSnapshot,
+  collection,
+  query,
+  orderBy,
+  deleteDoc,
+  serverTimestamp,
+  Timestamp,
+} from "firebase/firestore";
 import { auth, db } from "./firebase";
 
 type ProjectCategory = "Web" | "App" | "UI/UX" | "AI";
@@ -109,18 +121,20 @@ type AuthState = {
   userLoggedIn: boolean;
   adminLoggedIn: boolean;
   userName: string;
+  userEmail: string;
   adminEmail: string;
 };
 
-type LocalUser = {
+type RegisteredUser = {
+  id?: string;
   fullName: string;
   email: string;
-  password: string;
+  createdAt?: Timestamp;
 };
 
 type AuthContextValue = AuthState & {
-  loginUser: (name: string) => void;
-  logoutUser: () => void;
+  loginUser: (name: string, email: string) => void;
+  logoutUser: () => Promise<void>;
   loginAdmin: (email: string) => void;
   logoutAdmin: () => Promise<void>;
 };
@@ -255,25 +269,18 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 function useContent() {
   const value = useContext(ContentContext);
-  if (!value) {
-    throw new Error("useContent must be used inside ContentContext provider");
-  }
+  if (!value) throw new Error("useContent must be used inside ContentContext provider");
   return value;
 }
 
 function useAuth() {
   const value = useContext(AuthContext);
-  if (!value) {
-    throw new Error("useAuth must be used inside AuthContext provider");
-  }
+  if (!value) throw new Error("useAuth must be used inside AuthContext provider");
   return value;
 }
 
 function BrandLogo({ compact = false }: { compact?: boolean }) {
-  const {
-    content: { brandName, brandTagline },
-  } = useContent();
-
+  const { content: { brandName, brandTagline } } = useContent();
   return (
     <div className="flex items-center gap-3">
       <svg viewBox="0 0 100 100" className="h-10 w-10 shrink-0" role="img" aria-label={`${brandName} logo`}>
@@ -296,16 +303,12 @@ function BrandLogo({ compact = false }: { compact?: boolean }) {
 
 function ScrollSetup() {
   const location = useLocation();
-  const {
-    content: { brandName },
-  } = useContent();
-
+  const { content: { brandName } } = useContent();
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: "smooth" });
     const label = navLinks.find((item) => item.to === location.pathname)?.label ?? "Welcome";
     document.title = `${label} | ${brandName}`;
   }, [location.pathname, brandName]);
-
   return null;
 }
 
@@ -317,36 +320,18 @@ function Navbar() {
         <NavLink to="/" onClick={() => setOpen(false)}>
           <BrandLogo compact />
         </NavLink>
-        <button
-          type="button"
-          onClick={() => setOpen((v) => !v)}
-          className="rounded-lg p-2 text-slate-700 hover:bg-slate-100 md:hidden"
-          aria-label="Toggle menu"
-        >
+        <button type="button" onClick={() => setOpen((v) => !v)} className="rounded-lg p-2 text-slate-700 hover:bg-slate-100 md:hidden" aria-label="Toggle menu">
           {open ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
         </button>
         <ul className="hidden items-center gap-1 md:flex">
-          {navLinks.map((link) => (
-            <li key={link.to}>
-              <TopLink to={link.to} label={link.label} />
-            </li>
-          ))}
+          {navLinks.map((link) => (<li key={link.to}><TopLink to={link.to} label={link.label} /></li>))}
         </ul>
       </nav>
       <AnimatePresence>
         {open && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            className="overflow-hidden border-t border-slate-200 bg-white md:hidden"
-          >
+          <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden border-t border-slate-200 bg-white md:hidden">
             <ul className="space-y-1 px-4 py-3">
-              {navLinks.map((link) => (
-                <li key={link.to}>
-                  <TopLink to={link.to} label={link.label} mobile onClick={() => setOpen(false)} />
-                </li>
-              ))}
+              {navLinks.map((link) => (<li key={link.to}><TopLink to={link.to} label={link.label} mobile onClick={() => setOpen(false)} /></li>))}
             </ul>
           </motion.div>
         )}
@@ -357,37 +342,19 @@ function Navbar() {
 
 function TopLink({ to, label, mobile = false, onClick }: { to: string; label: string; mobile?: boolean; onClick?: () => void }) {
   return (
-    <NavLink
-      to={to}
-      onClick={onClick}
-      className={({ isActive }) =>
-        [
-          "rounded-md px-3 py-2 text-sm font-medium transition",
-          isActive ? "bg-gradient-to-r from-indigo-600 to-violet-500 bg-clip-text text-transparent" : "text-slate-600 hover:text-slate-900",
-          mobile ? "block w-full hover:bg-slate-100" : "inline-flex",
-        ].join(" ")
-      }
-    >
+    <NavLink to={to} onClick={onClick} className={({ isActive }) => ["rounded-md px-3 py-2 text-sm font-medium transition", isActive ? "bg-gradient-to-r from-indigo-600 to-violet-500 bg-clip-text text-transparent" : "text-slate-600 hover:text-slate-900", mobile ? "block w-full hover:bg-slate-100" : "inline-flex"].join(" ")}>
       {label}
     </NavLink>
   );
 }
 
 function PageWrap({ children }: { children: ReactNode }) {
-  return (
-    <motion.main initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -18 }} transition={{ duration: 0.4 }}>
-      {children}
-    </motion.main>
-  );
+  return (<motion.main initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -18 }} transition={{ duration: 0.4 }}>{children}</motion.main>);
 }
 
 function HomePage() {
-  const {
-    content: { home, services, projects },
-  } = useContent();
-
+  const { content: { home, services, projects } } = useContent();
   const featured = projects.slice(0, 3);
-
   return (
     <>
       <section className="relative overflow-hidden bg-slate-950 text-white">
@@ -401,20 +368,15 @@ function HomePage() {
             <p className="mt-5 max-w-2xl text-lg text-slate-200">{home.subheading}</p>
             <div className="mt-9 flex flex-wrap gap-3">
               <motion.div whileHover={{ scale: 1.03, boxShadow: "0px 0px 32px rgba(88, 101, 242, 0.4)" }} whileTap={{ scale: 0.98 }}>
-                <NavLink to="/contact" className="inline-flex items-center gap-2 rounded-full bg-white px-6 py-3 text-sm font-semibold text-slate-900">
-                  {home.ctaPrimary} <ArrowRight className="h-4 w-4" />
-                </NavLink>
+                <NavLink to="/contact" className="inline-flex items-center gap-2 rounded-full bg-white px-6 py-3 text-sm font-semibold text-slate-900">{home.ctaPrimary} <ArrowRight className="h-4 w-4" /></NavLink>
               </motion.div>
               <motion.div whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.98 }}>
-                <NavLink to="/projects" className="inline-flex items-center gap-2 rounded-full border border-white/35 px-6 py-3 text-sm font-semibold text-white hover:bg-white/10">
-                  {home.ctaSecondary}
-                </NavLink>
+                <NavLink to="/projects" className="inline-flex items-center gap-2 rounded-full border border-white/35 px-6 py-3 text-sm font-semibold text-white hover:bg-white/10">{home.ctaSecondary}</NavLink>
               </motion.div>
             </div>
           </div>
         </div>
       </section>
-
       <section className="mx-auto max-w-7xl px-5 py-20 md:px-8">
         <h2 className="font-heading text-3xl font-bold text-slate-900">Services</h2>
         <p className="mt-3 max-w-2xl text-slate-600">End-to-end digital product services crafted for ambitious startups and enterprise teams.</p>
@@ -422,11 +384,7 @@ function HomePage() {
           {services.map((service) => {
             const Icon = iconMap[service.icon];
             return (
-              <motion.article
-                key={service.name}
-                whileHover={{ y: -8 }}
-                className="rounded-2xl border border-slate-200/80 bg-white p-6 shadow-[0_14px_45px_-30px_rgba(33,56,161,0.55)]"
-              >
+              <motion.article key={service.name} whileHover={{ y: -8 }} className="rounded-2xl border border-slate-200/80 bg-white p-6 shadow-[0_14px_45px_-30px_rgba(33,56,161,0.55)]">
                 <Icon className="h-5 w-5 text-indigo-600" />
                 <h3 className="mt-4 font-heading text-xl font-semibold text-slate-900">{service.name}</h3>
                 <p className="mt-2 text-sm leading-relaxed text-slate-600">{service.description}</p>
@@ -435,7 +393,6 @@ function HomePage() {
           })}
         </div>
       </section>
-
       <section className="mx-auto max-w-7xl px-5 py-2 md:px-8">
         <h2 className="font-heading text-3xl font-bold text-slate-900">Why Choose Us</h2>
         <div className="mt-8 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
@@ -453,7 +410,6 @@ function HomePage() {
           ))}
         </div>
       </section>
-
       <section className="mx-auto max-w-7xl px-5 py-20 md:px-8">
         <h2 className="font-heading text-3xl font-bold text-slate-900">Featured Projects</h2>
         <div className="mt-8 grid gap-4 lg:grid-cols-3">
@@ -467,14 +423,11 @@ function HomePage() {
           ))}
         </div>
       </section>
-
       <section className="bg-slate-950 px-5 py-20 text-center text-white md:px-8">
         <h2 className="font-heading text-3xl font-bold">{home.ctaBanner}</h2>
         <p className="mx-auto mt-3 max-w-2xl text-slate-300">Partner with us to turn your idea into a secure, scalable, and stunning digital product.</p>
         <motion.div whileHover={{ scale: 1.03, boxShadow: "0px 0px 25px rgba(125, 107, 255, 0.45)" }} whileTap={{ scale: 0.98 }} className="mt-8 inline-flex">
-          <NavLink to="/contact" className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-indigo-500 to-violet-500 px-6 py-3 text-sm font-semibold text-white">
-            Start Your Project <ArrowRight className="h-4 w-4" />
-          </NavLink>
+          <NavLink to="/contact" className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-indigo-500 to-violet-500 px-6 py-3 text-sm font-semibold text-white">Start Your Project <ArrowRight className="h-4 w-4" /></NavLink>
         </motion.div>
       </section>
     </>
@@ -482,23 +435,14 @@ function HomePage() {
 }
 
 function AboutPage() {
-  const {
-    content: { about },
-  } = useContent();
-
+  const { content: { about } } = useContent();
   return (
     <section className="mx-auto max-w-7xl px-5 py-16 md:px-8">
       <h1 className="font-heading text-4xl font-bold text-slate-900">About Us</h1>
       <p className="mt-4 max-w-3xl text-slate-600">{about.intro}</p>
       <div className="mt-12 grid gap-8 md:grid-cols-2">
-        <div>
-          <h2 className="font-heading text-2xl font-semibold text-slate-900">Mission</h2>
-          <p className="mt-3 text-slate-600">{about.mission}</p>
-        </div>
-        <div>
-          <h2 className="font-heading text-2xl font-semibold text-slate-900">Vision</h2>
-          <p className="mt-3 text-slate-600">{about.vision}</p>
-        </div>
+        <div><h2 className="font-heading text-2xl font-semibold text-slate-900">Mission</h2><p className="mt-3 text-slate-600">{about.mission}</p></div>
+        <div><h2 className="font-heading text-2xl font-semibold text-slate-900">Vision</h2><p className="mt-3 text-slate-600">{about.vision}</p></div>
       </div>
       <div className="mt-12 rounded-2xl border border-slate-200 bg-white p-8">
         <h2 className="font-heading text-2xl font-semibold text-slate-900">Founder Message</h2>
@@ -509,9 +453,7 @@ function AboutPage() {
 }
 
 function TeamPage() {
-  const {
-    content: { team },
-  } = useContent();
+  const { content: { team } } = useContent();
   return (
     <section className="mx-auto max-w-7xl px-5 py-16 md:px-8">
       <h1 className="font-heading text-4xl font-bold text-slate-900">Team / Employee Details</h1>
@@ -519,19 +461,13 @@ function TeamPage() {
         {team.map((member) => (
           <motion.article key={member.name} whileHover={{ y: -7 }} className="rounded-2xl border border-slate-200 bg-white p-6 shadow-[0_20px_35px_-28px_rgba(27,39,104,0.45)]">
             <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-violet-500 font-heading text-lg font-semibold text-white">
-              {member.name
-                .split(" ")
-                .map((part) => part[0])
-                .join("")}
+              {member.name.split(" ").map((part) => part[0]).join("")}
             </div>
             <h2 className="font-heading text-xl font-semibold text-slate-900">{member.name}</h2>
             <p className="mt-1 text-sm font-medium text-indigo-600">{member.role}</p>
             <p className="mt-3 text-sm text-slate-600">{member.bio}</p>
             <p className="mt-3 text-sm text-slate-500">Skills: {member.skills}</p>
-            <div className="mt-4 flex gap-3 text-slate-500">
-              <Globe className="h-4 w-4" />
-              <AtSign className="h-4 w-4" />
-            </div>
+            <div className="mt-4 flex gap-3 text-slate-500"><Globe className="h-4 w-4" /><AtSign className="h-4 w-4" /></div>
           </motion.article>
         ))}
       </div>
@@ -540,26 +476,15 @@ function TeamPage() {
 }
 
 function ProjectsPage() {
-  const {
-    content: { projects },
-  } = useContent();
+  const { content: { projects } } = useContent();
   const [filter, setFilter] = useState<ProjectFilter>("All");
   const filtered = useMemo(() => (filter === "All" ? projects : projects.filter((item) => item.category === filter)), [projects, filter]);
-
   return (
     <section className="mx-auto max-w-7xl px-5 py-16 md:px-8">
       <h1 className="font-heading text-4xl font-bold text-slate-900">Projects</h1>
       <div className="mt-8 flex flex-wrap gap-2">
         {(["All", "Web", "App", "UI/UX", "AI"] as const).map((category) => (
-          <button
-            key={category}
-            type="button"
-            onClick={() => setFilter(category)}
-            className={[
-              "rounded-full px-4 py-2 text-sm font-medium transition",
-              filter === category ? "bg-slate-900 text-white" : "border border-slate-300 bg-white text-slate-600 hover:border-slate-500",
-            ].join(" ")}
-          >
+          <button key={category} type="button" onClick={() => setFilter(category)} className={["rounded-full px-4 py-2 text-sm font-medium transition", filter === category ? "bg-slate-900 text-white" : "border border-slate-300 bg-white text-slate-600 hover:border-slate-500"].join(" ")}>
             {category}
           </button>
         ))}
@@ -592,70 +517,85 @@ function UserLoginPage() {
   const [registerEmail, setRegisterEmail] = useState("");
   const [registerPassword, setRegisterPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
-  const [feedback, setFeedback] = useState("");
+  const [feedback, setFeedback] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const [loading, setLoading] = useState(false);
 
-  const getUsers = (): LocalUser[] => {
-    const raw = window.localStorage.getItem("aarya-users");
-    return raw ? (JSON.parse(raw) as LocalUser[]) : [];
-  };
-
-  const setUsers = (users: LocalUser[]) => {
-    window.localStorage.setItem("aarya-users", JSON.stringify(users));
-  };
-
-  const handleLogin = (event: FormEvent<HTMLFormElement>) => {
+  const handleLogin = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const users = getUsers();
-    const matched = users.find(
-      (user) => user.email.toLowerCase() === loginEmail.trim().toLowerCase() && user.password === loginPassword
-    );
-
-    if (users.length > 0 && !matched) {
-      setFeedback("Invalid email or password.");
-      return;
+    setLoading(true);
+    setFeedback(null);
+    try {
+      const userCredential = await signInWithEmailAndPassword(auth, loginEmail.trim(), loginPassword);
+      const displayName = userCredential.user.displayName || loginEmail.split("@")[0];
+      loginUser(displayName, userCredential.user.email || loginEmail);
+      navigate("/user-dashboard");
+    } catch (err: any) {
+      const code = err?.code || "";
+      if (code === "auth/invalid-credential" || code === "auth/wrong-password" || code === "auth/user-not-found") {
+        setFeedback({ type: "error", text: "Invalid email or password." });
+      } else if (code === "auth/invalid-email") {
+        setFeedback({ type: "error", text: "Please enter a valid email." });
+      } else {
+        setFeedback({ type: "error", text: "Login failed. Please try again." });
+      }
+    } finally {
+      setLoading(false);
     }
-
-    const resolvedName = matched?.fullName || loginEmail || "Client User";
-    loginUser(resolvedName);
-    setFeedback("");
-    navigate("/user-dashboard");
   };
 
-  const handleRegister = (event: FormEvent<HTMLFormElement>) => {
+  const handleRegister = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-
     if (!registerName.trim() || !registerEmail.trim() || !registerPassword.trim()) {
-      setFeedback("Please fill all registration fields.");
+      setFeedback({ type: "error", text: "Please fill all registration fields." });
       return;
     }
-
     if (registerPassword !== confirmPassword) {
-      setFeedback("Passwords do not match.");
+      setFeedback({ type: "error", text: "Passwords do not match." });
+      return;
+    }
+    if (registerPassword.length < 6) {
+      setFeedback({ type: "error", text: "Password must be at least 6 characters." });
       return;
     }
 
-    const users = getUsers();
-    const alreadyExists = users.some((user) => user.email.toLowerCase() === registerEmail.trim().toLowerCase());
-    if (alreadyExists) {
-      setFeedback("User already exists with this email.");
-      return;
+    setLoading(true);
+    setFeedback(null);
+
+    try {
+      const userCredential = await createUserWithEmailAndPassword(auth, registerEmail.trim(), registerPassword);
+      
+      await updateProfile(userCredential.user, {
+        displayName: registerName.trim(),
+      });
+
+      await setDoc(doc(db, "users", userCredential.user.uid), {
+        fullName: registerName.trim(),
+        email: registerEmail.trim(),
+        createdAt: serverTimestamp(),
+      });
+
+      setFeedback({ type: "success", text: "Registration successful! You can now login." });
+      setMode("login");
+      setLoginEmail(registerEmail.trim());
+      setLoginPassword("");
+      setRegisterName("");
+      setRegisterEmail("");
+      setRegisterPassword("");
+      setConfirmPassword("");
+    } catch (err: any) {
+      const code = err?.code || "";
+      if (code === "auth/email-already-in-use") {
+        setFeedback({ type: "error", text: "Email already registered. Please login." });
+      } else if (code === "auth/invalid-email") {
+        setFeedback({ type: "error", text: "Please enter a valid email." });
+      } else if (code === "auth/weak-password") {
+        setFeedback({ type: "error", text: "Password is too weak. Use at least 6 characters." });
+      } else {
+        setFeedback({ type: "error", text: "Registration failed. Please try again." });
+      }
+    } finally {
+      setLoading(false);
     }
-
-    const newUser: LocalUser = {
-      fullName: registerName.trim(),
-      email: registerEmail.trim(),
-      password: registerPassword,
-    };
-
-    setUsers([...users, newUser]);
-    setFeedback("Registration successful. Please login.");
-    setMode("login");
-    setLoginEmail(newUser.email);
-    setLoginPassword("");
-    setRegisterName("");
-    setRegisterEmail("");
-    setRegisterPassword("");
-    setConfirmPassword("");
   };
 
   return (
@@ -663,110 +603,56 @@ function UserLoginPage() {
       <div className="absolute inset-0 -z-10 bg-[radial-gradient(circle_at_top,_rgba(93,167,255,0.2),_transparent_40%),radial-gradient(circle_at_bottom_right,_rgba(153,106,255,0.2),_transparent_45%)]" />
       <div className="mx-auto max-w-md rounded-2xl border border-slate-200 bg-white p-8 shadow-[0_22px_60px_-35px_rgba(42,59,138,0.5)]">
         <h1 className="font-heading text-3xl font-bold text-slate-900">{mode === "login" ? "User Login" : "New User Register"}</h1>
+        <p className="mt-2 text-sm text-slate-500">Powered by Firebase Authentication</p>
 
         <div className="mt-5 grid grid-cols-2 rounded-xl bg-slate-100 p-1 text-sm font-semibold">
-          <button
-            type="button"
-            onClick={() => {
-              setMode("login");
-              setFeedback("");
-            }}
-            className={[
-              "rounded-lg py-2 transition",
-              mode === "login" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500",
-            ].join(" ")}
-          >
-            Login
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setMode("register");
-              setFeedback("");
-            }}
-            className={[
-              "rounded-lg py-2 transition",
-              mode === "register" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500",
-            ].join(" ")}
-          >
-            Register
-          </button>
+          <button type="button" onClick={() => { setMode("login"); setFeedback(null); }} className={["rounded-lg py-2 transition", mode === "login" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500"].join(" ")}>Login</button>
+          <button type="button" onClick={() => { setMode("register"); setFeedback(null); }} className={["rounded-lg py-2 transition", mode === "register" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500"].join(" ")}>Register</button>
         </div>
 
         {mode === "login" ? (
           <form className="mt-7 space-y-4" onSubmit={handleLogin}>
             <label className="block text-sm font-medium text-slate-700">
               Email
-              <input
-                value={loginEmail}
-                onChange={(e) => setLoginEmail(e.target.value)}
-                type="email"
-                required
-                className="mt-2 w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-indigo-500"
-              />
+              <input value={loginEmail} onChange={(e) => setLoginEmail(e.target.value)} type="email" required className="mt-2 w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-indigo-500" />
             </label>
             <label className="block text-sm font-medium text-slate-700">
               Password
-              <input
-                value={loginPassword}
-                onChange={(e) => setLoginPassword(e.target.value)}
-                type="password"
-                required
-                className="mt-2 w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-indigo-500"
-              />
+              <input value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} type="password" required className="mt-2 w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-indigo-500" />
             </label>
-            <button type="submit" className="w-full rounded-xl bg-gradient-to-r from-indigo-600 to-violet-500 px-4 py-3 font-semibold text-white">
-              Login
+            <button type="submit" disabled={loading} className="w-full rounded-xl bg-gradient-to-r from-indigo-600 to-violet-500 px-4 py-3 font-semibold text-white disabled:opacity-60">
+              {loading ? "Signing in..." : "Login"}
             </button>
           </form>
         ) : (
           <form className="mt-7 space-y-4" onSubmit={handleRegister}>
             <label className="block text-sm font-medium text-slate-700">
               Full Name
-              <input
-                value={registerName}
-                onChange={(e) => setRegisterName(e.target.value)}
-                required
-                className="mt-2 w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-indigo-500"
-              />
+              <input value={registerName} onChange={(e) => setRegisterName(e.target.value)} required className="mt-2 w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-indigo-500" />
             </label>
             <label className="block text-sm font-medium text-slate-700">
               Email
-              <input
-                value={registerEmail}
-                onChange={(e) => setRegisterEmail(e.target.value)}
-                type="email"
-                required
-                className="mt-2 w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-indigo-500"
-              />
+              <input value={registerEmail} onChange={(e) => setRegisterEmail(e.target.value)} type="email" required className="mt-2 w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-indigo-500" />
             </label>
             <label className="block text-sm font-medium text-slate-700">
-              Password
-              <input
-                value={registerPassword}
-                onChange={(e) => setRegisterPassword(e.target.value)}
-                type="password"
-                required
-                className="mt-2 w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-indigo-500"
-              />
+              Password (min 6 characters)
+              <input value={registerPassword} onChange={(e) => setRegisterPassword(e.target.value)} type="password" required minLength={6} className="mt-2 w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-indigo-500" />
             </label>
             <label className="block text-sm font-medium text-slate-700">
               Confirm Password
-              <input
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
-                type="password"
-                required
-                className="mt-2 w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-indigo-500"
-              />
+              <input value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} type="password" required className="mt-2 w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-indigo-500" />
             </label>
-            <button type="submit" className="w-full rounded-xl bg-gradient-to-r from-indigo-600 to-violet-500 px-4 py-3 font-semibold text-white">
-              Register
+            <button type="submit" disabled={loading} className="w-full rounded-xl bg-gradient-to-r from-indigo-600 to-violet-500 px-4 py-3 font-semibold text-white disabled:opacity-60">
+              {loading ? "Registering..." : "Register"}
             </button>
           </form>
         )}
 
-        {feedback && <p className="mt-4 text-sm font-medium text-indigo-600">{feedback}</p>}
+        {feedback && (
+          <div className={`mt-4 rounded-lg px-4 py-2 text-sm ${feedback.type === "success" ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "bg-red-50 text-red-700 border border-red-200"}`}>
+            {feedback.text}
+          </div>
+        )}
       </div>
     </section>
   );
@@ -784,7 +670,6 @@ function AdminLoginPage() {
     event.preventDefault();
     setError("");
     setLoading(true);
-
     try {
       const userCredential = await signInWithEmailAndPassword(auth, email.trim(), password);
       loginAdmin(userCredential.user.email || email);
@@ -795,8 +680,6 @@ function AdminLoginPage() {
         setError("Invalid email or password.");
       } else if (code === "auth/invalid-email") {
         setError("Please enter a valid email.");
-      } else if (code === "auth/too-many-requests") {
-        setError("Too many attempts. Please try again later.");
       } else {
         setError("Login failed. Please try again.");
       }
@@ -809,44 +692,19 @@ function AdminLoginPage() {
     <section className="bg-slate-950 px-5 py-16 md:px-8">
       <div className="mx-auto max-w-md rounded-2xl border border-indigo-400/35 bg-slate-900/80 p-8 shadow-[0_0_40px_rgba(90,102,255,0.2)]">
         <h1 className="font-heading text-3xl font-bold text-white">Admin Panel Login</h1>
-        <p className="mt-2 text-sm text-slate-400">Secure access powered by Firebase Authentication</p>
+        <p className="mt-2 text-sm text-slate-400">Secure access powered by Firebase</p>
         <form className="mt-7 space-y-4" onSubmit={handleSubmit}>
           <label className="block text-sm font-medium text-slate-300">
             Admin Email
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-              placeholder="admin@example.com"
-              className="mt-2 w-full rounded-xl border border-indigo-300/30 bg-slate-900 px-4 py-3 text-white outline-none focus:border-indigo-400"
-            />
+            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required placeholder="admin@example.com" className="mt-2 w-full rounded-xl border border-indigo-300/30 bg-slate-900 px-4 py-3 text-white outline-none focus:border-indigo-400" />
           </label>
           <label className="block text-sm font-medium text-slate-300">
             Password
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-              placeholder="Enter your password"
-              className="mt-2 w-full rounded-xl border border-indigo-300/30 bg-slate-900 px-4 py-3 text-white outline-none focus:border-indigo-400"
-            />
+            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required className="mt-2 w-full rounded-xl border border-indigo-300/30 bg-slate-900 px-4 py-3 text-white outline-none focus:border-indigo-400" />
           </label>
-          <p className="flex items-center gap-2 text-xs text-cyan-300">
-            <LockKeyhole className="h-3.5 w-3.5" />
-            Protected by Firebase secure authentication.
-          </p>
-          {error && (
-            <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-2 text-sm text-red-300">
-              {error}
-            </div>
-          )}
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full rounded-xl bg-gradient-to-r from-cyan-500 to-indigo-500 px-4 py-3 font-semibold text-white disabled:opacity-60"
-          >
+          <p className="flex items-center gap-2 text-xs text-cyan-300"><LockKeyhole className="h-3.5 w-3.5" />Protected by Firebase secure authentication.</p>
+          {error && (<div className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-2 text-sm text-red-300">{error}</div>)}
+          <button type="submit" disabled={loading} className="w-full rounded-xl bg-gradient-to-r from-cyan-500 to-indigo-500 px-4 py-3 font-semibold text-white disabled:opacity-60">
             {loading ? "Signing in..." : "Secure Login"}
           </button>
         </form>
@@ -856,9 +714,7 @@ function AdminLoginPage() {
 }
 
 function ContactPage() {
-  const {
-    content: { contact },
-  } = useContent();
+  const { content: { contact } } = useContent();
   return (
     <section className="mx-auto max-w-7xl px-5 py-16 md:px-8">
       <h1 className="font-heading text-4xl font-bold text-slate-900">Contact Us</h1>
@@ -874,10 +730,7 @@ function ContactPage() {
           ].map((item) => (
             <div key={item.label} className="flex items-start gap-3">
               <item.icon className="mt-1 h-4 w-4 text-indigo-600" />
-              <div>
-                <p className="text-sm font-semibold text-slate-900">{item.label}</p>
-                <p className="text-sm text-slate-600">{item.value}</p>
-              </div>
+              <div><p className="text-sm font-semibold text-slate-900">{item.label}</p><p className="text-sm text-slate-600">{item.value}</p></div>
             </div>
           ))}
         </div>
@@ -894,26 +747,23 @@ function ContactPage() {
         </form>
       </div>
       <div className="mt-12 overflow-hidden rounded-2xl border border-slate-200">
-        <iframe title="Aarya Forge Studio Office Map" src="https://www.google.com/maps?q=Hitech%20City%20Hyderabad&output=embed" className="h-[320px] w-full" loading="lazy" />
+        <iframe title="Office Map" src="https://www.google.com/maps?q=Hitech%20City%20Hyderabad&output=embed" className="h-[320px] w-full" loading="lazy" />
       </div>
     </section>
   );
 }
 
 function UserDashboardPage() {
-  const { userLoggedIn, userName, logoutUser } = useAuth();
-  const {
-    content: { projects },
-  } = useContent();
+  const { userLoggedIn, userName, userEmail, logoutUser } = useAuth();
+  const { content: { projects } } = useContent();
 
-  if (!userLoggedIn) {
-    return <Navigate to="/user-login" replace />;
-  }
+  if (!userLoggedIn) return <Navigate to="/user-login" replace />;
 
   return (
     <section className="mx-auto max-w-7xl px-5 py-16 md:px-8">
       <h1 className="font-heading text-4xl font-bold text-slate-900">User Dashboard</h1>
-      <p className="mt-2 text-slate-600">Welcome back, {userName}.</p>
+      <p className="mt-2 text-slate-600">Welcome back, <span className="font-semibold text-indigo-600">{userName}</span></p>
+      <p className="text-sm text-slate-500">{userEmail}</p>
       <div className="mt-8 grid gap-4 md:grid-cols-3">
         {[
           { label: "Active Projects", value: String(Math.min(projects.length, 4)) },
@@ -936,7 +786,7 @@ function UserDashboardPage() {
           </div>
         ))}
       </div>
-      <button type="button" onClick={logoutUser} className="mt-8 rounded-full border border-slate-300 px-5 py-2.5 text-sm font-semibold text-slate-700 hover:border-slate-900 hover:text-slate-900">
+      <button type="button" onClick={() => logoutUser()} className="mt-8 rounded-full border border-slate-300 px-5 py-2.5 text-sm font-semibold text-slate-700 hover:border-slate-900 hover:text-slate-900">
         Logout User
       </button>
     </section>
@@ -947,25 +797,47 @@ function AdminDashboardPage() {
   const { adminLoggedIn, adminEmail, logoutAdmin } = useAuth();
   const { content, setContent, resetContent } = useContent();
   const [notice, setNotice] = useState("");
+  const [users, setUsers] = useState<RegisteredUser[]>([]);
+  const [loadingUsers, setLoadingUsers] = useState(true);
+
+  useEffect(() => {
+    if (!adminLoggedIn) return;
+    const q = query(collection(db, "users"), orderBy("createdAt", "desc"));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const data = snapshot.docs.map((docSnap) => ({
+        id: docSnap.id,
+        ...docSnap.data(),
+      })) as RegisteredUser[];
+      setUsers(data);
+      setLoadingUsers(false);
+    }, () => setLoadingUsers(false));
+
+    return () => unsubscribe();
+  }, [adminLoggedIn]);
+
+  const handleDeleteUser = async (id: string) => {
+    if (!window.confirm("Delete this user record? (Note: Firebase Auth account will remain)")) return;
+    try {
+      await deleteDoc(doc(db, "users", id));
+      setNotice("User record deleted.");
+    } catch (error) {
+      console.error("Error deleting:", error);
+    }
+  };
 
   useEffect(() => {
     if (!notice) return;
-    const timer = window.setTimeout(() => setNotice(""), 1800);
+    const timer = window.setTimeout(() => setNotice(""), 2000);
     return () => window.clearTimeout(timer);
   }, [notice]);
 
-  if (!adminLoggedIn) {
-    return <Navigate to="/admin-login" replace />;
-  }
+  if (!adminLoggedIn) return <Navigate to="/admin-login" replace />;
 
   const updateProject = (index: number, key: keyof ProjectItem, value: string) => {
     setContent((prev) => {
       const next = [...prev.projects];
-      if (key === "category") {
-        next[index] = { ...next[index], category: value as ProjectCategory };
-      } else {
-        next[index] = { ...next[index], [key]: value };
-      }
+      if (key === "category") next[index] = { ...next[index], category: value as ProjectCategory };
+      else next[index] = { ...next[index], [key]: value };
       return { ...prev, projects: next };
     });
   };
@@ -978,25 +850,56 @@ function AdminDashboardPage() {
           <p className="mt-2 text-slate-600">Logged in as: <span className="font-semibold text-indigo-600">{adminEmail}</span></p>
         </div>
         <div className="flex gap-2">
-          <button
-            type="button"
-            onClick={() => {
-              resetContent();
-              setNotice("Content reset to default.");
-            }}
-            className="rounded-full border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700"
-          >
-            Reset
-          </button>
-          <button type="button" onClick={() => logoutAdmin()} className="rounded-full border border-slate-900 px-4 py-2 text-sm font-semibold text-slate-900">
-            Logout Admin
-          </button>
+          <button type="button" onClick={() => { resetContent(); setNotice("Content reset to default."); }} className="rounded-full border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700">Reset</button>
+          <button type="button" onClick={() => logoutAdmin()} className="rounded-full border border-slate-900 px-4 py-2 text-sm font-semibold text-slate-900">Logout Admin</button>
         </div>
       </div>
 
       {notice && <p className="mt-4 rounded-lg bg-emerald-50 px-4 py-2 text-sm text-emerald-700">{notice}</p>}
 
       <div className="mt-8 space-y-8">
+        {/* REGISTERED USERS SECTION */}
+        <section className="rounded-2xl border border-slate-200 bg-white p-6">
+          <div className="flex items-center justify-between">
+            <h2 className="font-heading text-xl font-semibold">
+              👥 Registered Users
+              <span className="ml-2 rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-bold text-indigo-700">{users.length}</span>
+            </h2>
+          </div>
+          {loadingUsers ? (
+            <p className="mt-4 text-sm text-slate-500">Loading users...</p>
+          ) : users.length === 0 ? (
+            <p className="mt-4 text-sm text-slate-500">No registered users yet. Users will appear here when they register.</p>
+          ) : (
+            <div className="mt-4 overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="border-b border-slate-200 text-left text-xs uppercase tracking-wider text-slate-500">
+                  <tr>
+                    <th className="pb-3">Name</th>
+                    <th className="pb-3">Email</th>
+                    <th className="pb-3">Registered</th>
+                    <th className="pb-3 text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {users.map((user) => (
+                    <tr key={user.id}>
+                      <td className="py-3 font-medium text-slate-900">{user.fullName}</td>
+                      <td className="py-3 text-indigo-600">{user.email}</td>
+                      <td className="py-3 text-slate-500">{user.createdAt ? user.createdAt.toDate().toLocaleDateString() : "—"}</td>
+                      <td className="py-3 text-right">
+                        <button type="button" onClick={() => user.id && handleDeleteUser(user.id)} className="rounded-lg border border-red-200 px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-50">
+                          Delete
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+
         <section className="rounded-2xl border border-slate-200 bg-white p-6">
           <h2 className="font-heading text-xl font-semibold">Brand + Hero</h2>
           <div className="mt-4 grid gap-4 md:grid-cols-2">
@@ -1016,80 +919,29 @@ function AdminDashboardPage() {
             <TextArea label="Introduction" value={content.about.intro} onChange={(value) => setContent((prev) => ({ ...prev, about: { ...prev.about, intro: value } }))} />
             <TextArea label="Mission" value={content.about.mission} onChange={(value) => setContent((prev) => ({ ...prev, about: { ...prev.about, mission: value } }))} />
             <TextArea label="Vision" value={content.about.vision} onChange={(value) => setContent((prev) => ({ ...prev, about: { ...prev.about, vision: value } }))} />
-            <TextArea
-              label="Founder Message"
-              value={content.about.founderMessage}
-              onChange={(value) => setContent((prev) => ({ ...prev, about: { ...prev.about, founderMessage: value } }))}
-            />
+            <TextArea label="Founder Message" value={content.about.founderMessage} onChange={(value) => setContent((prev) => ({ ...prev, about: { ...prev.about, founderMessage: value } }))} />
           </div>
         </section>
 
         <section className="rounded-2xl border border-slate-200 bg-white p-6">
           <div className="flex items-center justify-between">
             <h2 className="font-heading text-xl font-semibold">Services</h2>
-            <button
-              type="button"
-              onClick={() => setContent((prev) => ({ ...prev, services: [...prev.services, { name: "New Service", description: "Service description", icon: "code" }] }))}
-              className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1.5 text-sm font-semibold"
-            >
+            <button type="button" onClick={() => setContent((prev) => ({ ...prev, services: [...prev.services, { name: "New Service", description: "Service description", icon: "code" }] }))} className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1.5 text-sm font-semibold">
               <Plus className="h-4 w-4" /> Add Service
             </button>
           </div>
           <div className="mt-4 space-y-4">
             {content.services.map((service, index) => (
               <div key={`${service.name}-${index}`} className="grid gap-3 rounded-xl border border-slate-200 p-4 md:grid-cols-4">
-                <Input
-                  label="Service Name"
-                  value={service.name}
-                  onChange={(value) =>
-                    setContent((prev) => {
-                      const next = [...prev.services];
-                      next[index] = { ...next[index], name: value };
-                      return { ...prev, services: next };
-                    })
-                  }
-                />
-                <Input
-                  label="Description"
-                  value={service.description}
-                  onChange={(value) =>
-                    setContent((prev) => {
-                      const next = [...prev.services];
-                      next[index] = { ...next[index], description: value };
-                      return { ...prev, services: next };
-                    })
-                  }
-                />
+                <Input label="Service Name" value={service.name} onChange={(value) => setContent((prev) => { const next = [...prev.services]; next[index] = { ...next[index], name: value }; return { ...prev, services: next }; })} />
+                <Input label="Description" value={service.description} onChange={(value) => setContent((prev) => { const next = [...prev.services]; next[index] = { ...next[index], description: value }; return { ...prev, services: next }; })} />
                 <label className="text-sm font-medium text-slate-700">
                   Icon
-                  <select
-                    value={service.icon}
-                    onChange={(e) =>
-                      setContent((prev) => {
-                        const next = [...prev.services];
-                        next[index] = { ...next[index], icon: e.target.value as ServiceIconKey };
-                        return { ...prev, services: next };
-                      })
-                    }
-                    className="mt-2 w-full rounded-lg border border-slate-300 px-3 py-2"
-                  >
-                    <option value="code">Code</option>
-                    <option value="app">App</option>
-                    <option value="design">Design</option>
-                    <option value="backend">Backend</option>
-                    <option value="ai">AI</option>
+                  <select value={service.icon} onChange={(e) => setContent((prev) => { const next = [...prev.services]; next[index] = { ...next[index], icon: e.target.value as ServiceIconKey }; return { ...prev, services: next }; })} className="mt-2 w-full rounded-lg border border-slate-300 px-3 py-2">
+                    <option value="code">Code</option><option value="app">App</option><option value="design">Design</option><option value="backend">Backend</option><option value="ai">AI</option>
                   </select>
                 </label>
-                <button
-                  type="button"
-                  onClick={() =>
-                    setContent((prev) => ({
-                      ...prev,
-                      services: prev.services.filter((_, itemIndex) => itemIndex !== index),
-                    }))
-                  }
-                  className="self-end rounded-lg border border-red-200 px-3 py-2 text-sm font-semibold text-red-600"
-                >
+                <button type="button" onClick={() => setContent((prev) => ({ ...prev, services: prev.services.filter((_, itemIndex) => itemIndex !== index) }))} className="self-end rounded-lg border border-red-200 px-3 py-2 text-sm font-semibold text-red-600">
                   <Minus className="mr-1 inline h-4 w-4" /> Remove
                 </button>
               </div>
@@ -1100,19 +952,7 @@ function AdminDashboardPage() {
         <section className="rounded-2xl border border-slate-200 bg-white p-6">
           <div className="flex items-center justify-between">
             <h2 className="font-heading text-xl font-semibold">Projects</h2>
-            <button
-              type="button"
-              onClick={() =>
-                setContent((prev) => ({
-                  ...prev,
-                  projects: [
-                    ...prev.projects,
-                    { title: "New Project", category: "Web", stack: "React", description: "Project description" },
-                  ],
-                }))
-              }
-              className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1.5 text-sm font-semibold"
-            >
+            <button type="button" onClick={() => setContent((prev) => ({ ...prev, projects: [...prev.projects, { title: "New Project", category: "Web", stack: "React", description: "Project description" }] }))} className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1.5 text-sm font-semibold">
               <Plus className="h-4 w-4" /> Add Project
             </button>
           </div>
@@ -1123,24 +963,12 @@ function AdminDashboardPage() {
                 <label className="text-sm font-medium text-slate-700">
                   Category
                   <select value={project.category} onChange={(e) => updateProject(index, "category", e.target.value)} className="mt-2 w-full rounded-lg border border-slate-300 px-3 py-2">
-                    <option value="Web">Web</option>
-                    <option value="App">App</option>
-                    <option value="UI/UX">UI/UX</option>
-                    <option value="AI">AI</option>
+                    <option value="Web">Web</option><option value="App">App</option><option value="UI/UX">UI/UX</option><option value="AI">AI</option>
                   </select>
                 </label>
                 <Input label="Stack" value={project.stack} onChange={(value) => updateProject(index, "stack", value)} />
                 <Input label="Description" value={project.description} onChange={(value) => updateProject(index, "description", value)} />
-                <button
-                  type="button"
-                  onClick={() =>
-                    setContent((prev) => ({
-                      ...prev,
-                      projects: prev.projects.filter((_, itemIndex) => itemIndex !== index),
-                    }))
-                  }
-                  className="self-end rounded-lg border border-red-200 px-3 py-2 text-sm font-semibold text-red-600"
-                >
+                <button type="button" onClick={() => setContent((prev) => ({ ...prev, projects: prev.projects.filter((_, itemIndex) => itemIndex !== index) }))} className="self-end rounded-lg border border-red-200 px-3 py-2 text-sm font-semibold text-red-600">
                   <Minus className="mr-1 inline h-4 w-4" /> Remove
                 </button>
               </div>
@@ -1151,79 +979,18 @@ function AdminDashboardPage() {
         <section className="rounded-2xl border border-slate-200 bg-white p-6">
           <div className="flex items-center justify-between">
             <h2 className="font-heading text-xl font-semibold">Team</h2>
-            <button
-              type="button"
-              onClick={() =>
-                setContent((prev) => ({
-                  ...prev,
-                  team: [
-                    ...prev.team,
-                    { name: "New Member", role: "Role", skills: "Skills", bio: "Short bio" },
-                  ],
-                }))
-              }
-              className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1.5 text-sm font-semibold"
-            >
+            <button type="button" onClick={() => setContent((prev) => ({ ...prev, team: [...prev.team, { name: "New Member", role: "Role", skills: "Skills", bio: "Short bio" }] }))} className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1.5 text-sm font-semibold">
               <Plus className="h-4 w-4" /> Add Member
             </button>
           </div>
           <div className="mt-4 space-y-4">
             {content.team.map((member, index) => (
               <div key={`${member.name}-${index}`} className="grid gap-3 rounded-xl border border-slate-200 p-4 md:grid-cols-5">
-                <Input
-                  label="Name"
-                  value={member.name}
-                  onChange={(value) =>
-                    setContent((prev) => {
-                      const next = [...prev.team];
-                      next[index] = { ...next[index], name: value };
-                      return { ...prev, team: next };
-                    })
-                  }
-                />
-                <Input
-                  label="Role"
-                  value={member.role}
-                  onChange={(value) =>
-                    setContent((prev) => {
-                      const next = [...prev.team];
-                      next[index] = { ...next[index], role: value };
-                      return { ...prev, team: next };
-                    })
-                  }
-                />
-                <Input
-                  label="Skills"
-                  value={member.skills}
-                  onChange={(value) =>
-                    setContent((prev) => {
-                      const next = [...prev.team];
-                      next[index] = { ...next[index], skills: value };
-                      return { ...prev, team: next };
-                    })
-                  }
-                />
-                <Input
-                  label="Bio"
-                  value={member.bio}
-                  onChange={(value) =>
-                    setContent((prev) => {
-                      const next = [...prev.team];
-                      next[index] = { ...next[index], bio: value };
-                      return { ...prev, team: next };
-                    })
-                  }
-                />
-                <button
-                  type="button"
-                  onClick={() =>
-                    setContent((prev) => ({
-                      ...prev,
-                      team: prev.team.filter((_, itemIndex) => itemIndex !== index),
-                    }))
-                  }
-                  className="self-end rounded-lg border border-red-200 px-3 py-2 text-sm font-semibold text-red-600"
-                >
+                <Input label="Name" value={member.name} onChange={(value) => setContent((prev) => { const next = [...prev.team]; next[index] = { ...next[index], name: value }; return { ...prev, team: next }; })} />
+                <Input label="Role" value={member.role} onChange={(value) => setContent((prev) => { const next = [...prev.team]; next[index] = { ...next[index], role: value }; return { ...prev, team: next }; })} />
+                <Input label="Skills" value={member.skills} onChange={(value) => setContent((prev) => { const next = [...prev.team]; next[index] = { ...next[index], skills: value }; return { ...prev, team: next }; })} />
+                <Input label="Bio" value={member.bio} onChange={(value) => setContent((prev) => { const next = [...prev.team]; next[index] = { ...next[index], bio: value }; return { ...prev, team: next }; })} />
+                <button type="button" onClick={() => setContent((prev) => ({ ...prev, team: prev.team.filter((_, itemIndex) => itemIndex !== index) }))} className="self-end rounded-lg border border-red-200 px-3 py-2 text-sm font-semibold text-red-600">
                   <Minus className="mr-1 inline h-4 w-4" /> Remove
                 </button>
               </div>
@@ -1243,11 +1010,7 @@ function AdminDashboardPage() {
           </div>
         </section>
 
-        <button
-          type="button"
-          onClick={() => setNotice("Changes saved automatically.")}
-          className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-indigo-600 to-violet-500 px-5 py-2.5 text-sm font-semibold text-white"
-        >
+        <button type="button" onClick={() => setNotice("Changes saved automatically.")} className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-indigo-600 to-violet-500 px-5 py-2.5 text-sm font-semibold text-white">
           <Save className="h-4 w-4" /> Save Changes
         </button>
       </div>
@@ -1274,9 +1037,7 @@ function TextArea({ label, value, onChange }: { label: string; value: string; on
 }
 
 function Footer() {
-  const {
-    content: { brandName, services },
-  } = useContent();
+  const { content: { brandName, services } } = useContent();
   return (
     <footer className="border-t border-slate-200 bg-slate-50/80">
       <div className="mx-auto grid max-w-7xl gap-10 px-5 py-12 md:grid-cols-4 md:px-8">
@@ -1287,30 +1048,16 @@ function Footer() {
         <div>
           <h2 className="font-heading text-sm font-semibold uppercase tracking-[0.12em] text-slate-900">Quick Links</h2>
           <ul className="mt-3 space-y-2 text-sm text-slate-600">
-            {navLinks.slice(0, 5).map((item) => (
-              <li key={item.to}>
-                <NavLink to={item.to} className="hover:text-slate-900">
-                  {item.label}
-                </NavLink>
-              </li>
-            ))}
+            {navLinks.slice(0, 5).map((item) => (<li key={item.to}><NavLink to={item.to} className="hover:text-slate-900">{item.label}</NavLink></li>))}
           </ul>
         </div>
         <div>
           <h2 className="font-heading text-sm font-semibold uppercase tracking-[0.12em] text-slate-900">Services</h2>
-          <ul className="mt-3 space-y-2 text-sm text-slate-600">
-            {services.map((item) => (
-              <li key={item.name}>{item.name}</li>
-            ))}
-          </ul>
+          <ul className="mt-3 space-y-2 text-sm text-slate-600">{services.map((item) => (<li key={item.name}>{item.name}</li>))}</ul>
         </div>
         <div>
           <h2 className="font-heading text-sm font-semibold uppercase tracking-[0.12em] text-slate-900">Social Media</h2>
-          <div className="mt-3 flex items-center gap-3 text-slate-500">
-            <AtSign className="h-4 w-4" />
-            <Briefcase className="h-4 w-4" />
-            <Mail className="h-4 w-4" />
-          </div>
+          <div className="mt-3 flex items-center gap-3 text-slate-500"><AtSign className="h-4 w-4" /><Briefcase className="h-4 w-4" /><Mail className="h-4 w-4" /></div>
         </div>
       </div>
       <div className="border-t border-slate-200 py-4 text-center text-xs text-slate-500">Copyright {new Date().getFullYear()} {brandName}. All rights reserved.</div>
@@ -1343,112 +1090,107 @@ function AppShell() {
   );
 }
 
+const ADMIN_EMAILS = ["hariomparasar0@gmail.com"];
+
 export default function App() {
   const [content, setContent] = useState<SiteContent>(initialContent);
   const [isContentLoaded, setIsContentLoaded] = useState(false);
 
-  const [authState, setAuthState] = useState<AuthState>(() => {
-    const saved = typeof window !== "undefined" ? window.localStorage.getItem("aarya-auth") : null;
-    return saved ? (JSON.parse(saved) as AuthState) : { userLoggedIn: false, adminLoggedIn: false, userName: "Client User", adminEmail: "" };
+  const [authState, setAuthState] = useState<AuthState>({
+    userLoggedIn: false,
+    adminLoggedIn: false,
+    userName: "",
+    userEmail: "",
+    adminEmail: "",
   });
 
-  // Listen to Firebase Auth state changes
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (firebaseUser: User | null) => {
       if (firebaseUser) {
-        setAuthState((prev) => ({
-          ...prev,
-          adminLoggedIn: true,
-          adminEmail: firebaseUser.email || "",
-        }));
+        const email = firebaseUser.email || "";
+        const isAdmin = ADMIN_EMAILS.includes(email.toLowerCase());
+        if (isAdmin) {
+          setAuthState({
+            userLoggedIn: false,
+            adminLoggedIn: true,
+            userName: "",
+            userEmail: "",
+            adminEmail: email,
+          });
+        } else {
+          setAuthState({
+            userLoggedIn: true,
+            adminLoggedIn: false,
+            userName: firebaseUser.displayName || email.split("@")[0],
+            userEmail: email,
+            adminEmail: "",
+          });
+        }
       } else {
-        setAuthState((prev) => ({
-          ...prev,
+        setAuthState({
+          userLoggedIn: false,
           adminLoggedIn: false,
+          userName: "",
+          userEmail: "",
           adminEmail: "",
-        }));
+        });
       }
     });
 
     return () => unsubscribe();
   }, []);
 
-  // Load content from Firestore on app start
   useEffect(() => {
     const contentDocRef = doc(db, "siteContent", "main");
-    
-    // Real-time listener - automatically updates when content changes
     const unsubscribe = onSnapshot(
       contentDocRef,
       async (snapshot) => {
         if (snapshot.exists()) {
-          // Content exists in Firestore - load it
           setContent(snapshot.data() as SiteContent);
         } else {
-          // First time - save default content to Firestore
           try {
             await setDoc(contentDocRef, initialContent);
             setContent(initialContent);
-          } catch (error) {
-            console.error("Error initializing content:", error);
-          }
+          } catch (error) { console.error("Error initializing content:", error); }
         }
         setIsContentLoaded(true);
       },
-      (error) => {
-        console.error("Error loading content:", error);
-        setIsContentLoaded(true);
-      }
+      (error) => { console.error("Error loading content:", error); setIsContentLoaded(true); }
     );
-
     return () => unsubscribe();
   }, []);
 
-  // Save content to Firestore whenever it changes (only after initial load)
   useEffect(() => {
     if (!isContentLoaded) return;
-    
     const saveTimer = setTimeout(async () => {
       try {
         const contentDocRef = doc(db, "siteContent", "main");
         await setDoc(contentDocRef, content);
-      } catch (error) {
-        console.error("Error saving content:", error);
-      }
-    }, 1000); // Save after 1 second of inactivity
-
+      } catch (error) { console.error("Error saving content:", error); }
+    }, 1000);
     return () => clearTimeout(saveTimer);
   }, [content, isContentLoaded]);
 
-  useEffect(() => {
-    window.localStorage.setItem("aarya-auth", JSON.stringify(authState));
-  }, [authState]);
+  const contentValue = useMemo<ContentContextValue>(() => ({
+    content,
+    setContent,
+    resetContent: () => setContent(initialContent),
+  }), [content]);
 
-  const contentValue = useMemo<ContentContextValue>(
-    () => ({
-      content,
-      setContent,
-      resetContent: () => setContent(initialContent),
-    }),
-    [content]
-  );
+  const authValue = useMemo<AuthContextValue>(() => ({
+    ...authState,
+    loginUser: (name: string, email: string) => setAuthState((prev) => ({ ...prev, userLoggedIn: true, userName: name, userEmail: email })),
+    logoutUser: async () => {
+      await signOut(auth);
+      setAuthState({ userLoggedIn: false, adminLoggedIn: false, userName: "", userEmail: "", adminEmail: "" });
+    },
+    loginAdmin: (email: string) => setAuthState((prev) => ({ ...prev, adminLoggedIn: true, adminEmail: email })),
+    logoutAdmin: async () => {
+      await signOut(auth);
+      setAuthState({ userLoggedIn: false, adminLoggedIn: false, userName: "", userEmail: "", adminEmail: "" });
+    },
+  }), [authState]);
 
-  const authValue = useMemo<AuthContextValue>(
-    () => ({
-      ...authState,
-      loginUser: (name: string) => setAuthState((prev) => ({ ...prev, userLoggedIn: true, userName: name || "Client User" })),
-      logoutUser: () => setAuthState((prev) => ({ ...prev, userLoggedIn: false })),
-      loginAdmin: (email: string) =>
-        setAuthState((prev) => ({ ...prev, adminLoggedIn: true, adminEmail: email })),
-      logoutAdmin: async () => {
-        await signOut(auth);
-        setAuthState((prev) => ({ ...prev, adminLoggedIn: false, adminEmail: "" }));
-      },
-    }),
-    [authState]
-  );
-
-  // Show loading screen while content loads from Firestore
   if (!isContentLoaded) {
     return (
       <div className="flex h-screen items-center justify-center bg-slate-950">
